@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <link rel="manifest" href="manifest.json">
+  <title>DB検索アプリ</title>
+
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      margin: 0; 
+      padding: 15px; 
+      background-color: #f5f5f7; 
+      color: #333; 
+    }
+    h1 { font-size: 1.2rem; text-align: center; margin-top: 5px; margin-bottom: 15px; }
+    
+    .card { background: #fff; border-radius: 12px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 15px; }
+    
+    /* 検索バーを画面上部に固定するCSS */
+    .sticky-search-container {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background-color: #f5f5f7;
+      padding-top: 5px;
+      padding-bottom: 5px;
+      margin-left: -15px;
+      margin-right: -15px;
+      padding-left: 15px;
+      padding-right: 15px;
+    }
+
+    /* 検索ボックスとボタンのレイアウト */
+    .search-box-container { display: flex; gap: 8px; }
+    input[type="text"] { flex: 1; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; outline: none; }
+    input[type="text"]:focus { border-color: #007aff; }
+    .btn-search { background-color: #007aff; color: #fff; border: none; padding: 0 20px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; }
+    .btn-search:active { background-color: #0056b3; }
+    
+    .status { font-size: 0.85rem; color: #666; margin-top: 8px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    .no-result { text-align: center; color: #8e8e93; margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; }
+    .file-input-area { text-align: center; border: 2px dashed #007aff; border-radius: 12px; padding: 20px; background: #f0f7ff; }
+    .error-box { background: #ffeef0; border: 1px solid #d9534f; color: #d9534f; padding: 12px; border-radius: 8px; margin-top: 10px; font-size: 0.85rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+
+  <h1>100万件 データベース検索</h1>
+
+  <!-- 初回DB読み込みエリア -->
+  <div id="setup-area" class="card file-input-area">
+    <p><b>初回の初期設定</b></p>
+    <p style="font-size: 0.85rem; color: #555;">作成した MPD.db ファイルを選択してください。<br>（アプリ内に読み込まれます）</p>
+    <input type="file" id="db-file" accept=".db,.sqlite">
+    <div id="setup-msg"></div>
+  </div>
+
+  <!-- 検索画面エリア（DB設定完了後に表示） -->
+  <div id="search-area" style="display: none;">
+    <div class="sticky-search-container">
+      <div class="card" style="margin-bottom: 0;">
+        <div class="search-box-container">
+          <input type="text" id="search-input" placeholder="検索ワードを入力..." autocomplete="off">
+          <button id="search-btn" class="btn-search">検索</button>
+        </div>
+        <div id="status" class="status">検索ワードを入力して「検索」を押してください</div>
+      </div>
+    </div>
+
+    <!-- 検索結果リスト -->
+    <ul id="results" style="margin-top: 15px;"></ul>
+  </div>
+
+  <!-- ローカルの SQLite Wasm ライブラリの読み込み -->
+  <script src="sql-wasm.js"></script>
+
+  <script>
+    let db = null;
+    let SQL = null;
+
+    // Service Worker の登録（オフライン自動キャッシュ）
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(() => {
+        console.log("Service Worker 登録完了");
+      }).catch(err => {
+        console.error("Service Worker 登録失敗:", err);
+      });
+    }
+
+    // 検索・無限スクロール管理変数
+    let currentKeywords = [];
+    let totalCount = 0;
+    let loadedCount = 0;
+    let isLoading = false;
+    const PAGE_SIZE = 50;
+
+    // ローカルの sql-wasm.wasm を参照して初期化
+    window.initSqlJs({
+      locateFile: file => `./${file}`
+    }).then(sql => {
+      SQL = sql;
+      console.log("SQL.js の初期化に成功しました");
+    }).catch(err => {
+      console.error("SQL.js 初期化エラー:", err);
+      document.getElementById('setup-msg').innerHTML = `<div class="error-box">ライブラリ読み込みエラー: ${err.message}</div>`;
+    });
+
+    // DBファイル選択時
+    document.getElementById('db-file').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      if (!SQL) {
+        alert("SQL.jsの初期化が完了していません。数秒待ってから再試行してください。");
+        return;
+      }
+
+      const setupMsg = document.getElementById('setup-msg');
+      setupMsg.innerHTML = '<p style="color:#007aff; font-weight:bold; margin-top:15px;">データベース（461MB）をメモリに読み込み中...<br><span style="font-size:0.8rem; font-weight:normal; color:#555;">※15秒〜30秒ほどかかります。そのままお待ちください。</span></p>';
+      
+      setTimeout(() => {
+        const reader = new FileReader();
+        reader.onload = function() {
+          try {
+            const Uints = new Uint8Array(reader.result);
+            db = new SQL.Database(Uints);
+
+            // 読み込み成功時の画面切り替え
+            document.getElementById('setup-area').style.display = 'none';
+            document.getElementById('search-area').style.display = 'block';
+            document.getElementById('status').innerText = 'データベース準備完了（100万件読み込み済み）';
+
+          } catch (err) {
+            console.error("DB展開エラー:", err);
+            setupMsg.innerHTML = `<div class="error-box"><b>エラーが発生しました:</b><br>${err.message}<br><br>※PCのメモリ不足の可能性があります。ブラウザの他のタブを閉じて再試行してみてください。</div>`;
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      }, 100);
+    });
+
+    // 検索処理トリガー関数
+    function startSearch() {
+      const searchInput = document.getElementById('search-input');
+      const resultsList = document.getElementById('results');
+      const statusDiv = document.getElementById('status');
+      
+      const rawKeyword = searchInput.value.trim();
+
+      resultsList.innerHTML = '';
+      loadedCount = 0;
+      totalCount = 0;
+
+      if (!rawKeyword || !db) {
+        statusDiv.innerText = '検索ワードを入力してください';
+        return;
+      }
+
+      currentKeywords = rawKeyword.replace(/ /g, ' ').split(/\s+/).filter(k => k.length > 0);
+      if (currentKeywords.length === 0) return;
+
+      statusDiv.innerText = '検索中...';
+      
+      setTimeout(() => {
+        executeSearch(true);
+      }, 50);
+    }
+
+    document.getElementById('search-btn').addEventListener('click', startSearch);
+
+    document.getElementById('search-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        startSearch();
+      }
+    });
+
+    // 検索クエリ実行関数
+    function executeSearch(isNewSearch = false) {
+      if (isLoading || !db || currentKeywords.length === 0) return;
+      isLoading = true;
+
+      const searchInput = document.getElementById('search-input');
+      const resultsList = document.getElementById('results');
+      const statusDiv = document.getElementById('status');
+
+      const startTime = performance.now();
+
+      try {
+        // キーワード条件の組み立て
+        const keywordConditions = currentKeywords.map(() => "[検索ワード] LIKE ?");
+        
+        // 落札金額が「0」「\0」「¥0」「0円」などを除外する条件を追加
+        const excludeZeroCondition = "([落札金額] IS NOT NULL AND [落札金額] != '0' AND [落札金額] != '\\0' AND [落札金額] != '¥0' AND [落札金額] != '0円')";
+        
+        const allConditions = [...keywordConditions, excludeZeroCondition];
+        const whereClauses = allConditions.join(" AND ");
+
+        const params = currentKeywords.map(k => '%' + k + '%');
+
+        if (isNewSearch) {
+          const countSql = `SELECT COUNT(*) as total FROM mpd WHERE ${whereClauses}`;
+          const countStmt = db.prepare(countSql);
+          countStmt.bind(params);
+          if (countStmt.step()) {
+            totalCount = countStmt.getAsObject().total;
+          }
+          countStmt.free();
+        }
+
+        if (totalCount === 0) {
+          resultsList.innerHTML = `<li class="no-result">「${searchInput.value}」に該当するデータが見つかりません</li>`;
+          statusDiv.innerText = `0件中 0件表示 (検索時間: 0ms)`;
+          isLoading = false;
+          return;
+        }
+
+        const dataSql = `SELECT * FROM mpd WHERE ${whereClauses} ORDER BY [取引日] DESC LIMIT ${PAGE_SIZE} OFFSET ${loadedCount}`;
+        const stmt = db.prepare(dataSql);
+        stmt.bind(params);
+
+        let html = '';
+        let fetchedCount = 0;
+
+        while (stmt.step()) {
+          const row = stmt.getAsObject();
+          html += renderItemCard(row);
+          fetchedCount++;
+        }
+        stmt.free();
+
+        loadedCount += fetchedCount;
+
+        if (isNewSearch) {
+          resultsList.innerHTML = html;
+        } else {
+          resultsList.insertAdjacentHTML('beforeend', html);
+        }
+
+        const endTime = performance.now();
+        const timeTaken = (endTime - startTime).toFixed(1);
+
+        statusDiv.innerText = `${totalCount.toLocaleString()}件中 ${loadedCount.toLocaleString()}件表示 (検索時間: ${timeTaken}ms)`;
+
+      } catch (err) {
+        console.error("検索実行エラー:", err);
+        statusDiv.innerText = '検索中にエラーが発生しました: ' + err.message;
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    function formatValue(val) {
+      if (val === null || val === undefined) return '-';
+      const str = String(val).trim();
+      return str === '' ? '-' : str;
+    }
+
+    // 1件分のHTMLカード生成
+    function renderItemCard(row) {
+      const brand = formatValue(row['ブランド']);
+      const model = formatValue(row['モデル名']);
+      const rankVal = formatValue(row['ランク']);
+      const rank = rankVal !== '-' ? `[ランク: ${rankVal}]` : '[ランク: -]';
+
+      // 2段目: 付属品を赤字化
+      const fukuzokuhinVal = formatValue(row['付属品']);
+      const fukuzokuhinHtml = fukuzokuhinVal !== '-' 
+        ? `付属品: <span style="color: #d9534f; font-weight: bold;">${fukuzokuhinVal}</span>` 
+        : `付属品: -`;
+
+      const line2Items = [
+        `型番: ${formatValue(row['型番'])}`,
+        `シリアル: ${formatValue(row['シリアル'])}`,
+        `素材: ${formatValue(row['素材'])}`,
+        `文字盤: ${formatValue(row['文字盤カラー'])}`,
+        `詳細: ${formatValue(row['詳細'])}`,
+        `重量: ${formatValue(row['重量'])}`,
+        fukuzokuhinHtml
+      ].join(' | ');
+
+      // 3段目
+      const date = (row['取引日'] || '').split(' ')[0] || '-';
+      const price = formatValue(row['落札金額']);
+      
+      let kakeritsuText = '-';
+      if (row['掛け率'] !== null && row['掛け率'] !== undefined && row['掛け率'] !== '') {
+        const val = parseFloat(row['掛け率']);
+        if (!isNaN(val)) {
+          kakeritsuText = `${(val * 100).toFixed(2)}％`;
+        } else {
+          kakeritsuText = String(row['掛け率']);
+        }
+      }
+      const kakeritsu = `掛け率: ${kakeritsuText}`;
+      const place = `取引場所: ${formatValue(row['取引場所'])}`;
+
+      // 成約不成約: 項目名は付けず値のみ（赤字）
+      const seiyakuVal = formatValue(row['成約不成約']);
+      const seiyakuHtml = seiyakuVal !== '-' 
+        ? `<span style="color: #d9534f; font-weight: bold;">${seiyakuVal}</span>` 
+        : `-`;
+
+      const line3SubItems = [kakeritsu, place, seiyakuHtml].join(' | ');
+
+      return `
+        <li style="margin-bottom: 12px; border-left: 4px solid #007aff; background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+          <!-- 1段目 -->
+          <div style="font-weight: bold; font-size: 1rem; color: #1d1d1f; margin-bottom: 4px;">
+            ${brand === '-' ? '' : brand} ${model === '-' ? '' : model} <span style="font-size: 0.85rem; color: #007aff; font-weight: normal;">${rank}</span>
+          </div>
+          
+          <!-- 2段目 -->
+          <div style="font-size: 0.82rem; color: #424245; margin-bottom: 6px; line-height: 1.4;">
+            ${line2Items}
+          </div>
+
+          <!-- 3段目 -->
+          <div style="font-size: 0.85rem; color: #6e6e73; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; border-top: 1px solid #f0f0f2; padding-top: 6px;">
+            <div>
+              <span>取引日: ${date}</span>
+              <span style="margin-left: 8px; font-weight: bold; color: #d9534f; font-size: 0.95rem;">落札額: ${price}</span>
+            </div>
+            <div style="font-size: 0.8rem; color: #86868b;">
+              ${line3SubItems}
+            </div>
+          </div>
+        </li>
+      `;
+    }
+
+    // 無限スクロール処理
+    window.addEventListener('scroll', () => {
+      if (isLoading || loadedCount >= totalCount) return;
+
+      const scrollPosition = window.innerHeight + window.scrollY;
+      const threshold = document.documentElement.offsetHeight - 200;
+
+      if (scrollPosition >= threshold) {
+        executeSearch(false);
+      }
+    });
+  </script>
+</body>
+</html>
