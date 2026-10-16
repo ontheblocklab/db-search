@@ -192,7 +192,7 @@
         // キーワード条件の組み立て
         const keywordConditions = currentKeywords.map(() => "[検索ワード] LIKE ?");
         
-        // 落札金額が「0」「\0」「¥0」「0円」などを除外する条件を追加
+        // 落札金額が「0」「\0」「¥0」「0円」などを除外する条件
         const excludeZeroCondition = "([落札金額] IS NOT NULL AND [落札金額] != '0' AND [落札金額] != '\\0' AND [落札金額] != '¥0' AND [落札金額] != '0円')";
         
         const allConditions = [...keywordConditions, excludeZeroCondition];
@@ -217,6 +217,7 @@
           return;
         }
 
+        // 取引日の降順（ORDER BY [取引日] DESC）で最新データから順に取得
         const dataSql = `SELECT * FROM mpd WHERE ${whereClauses} ORDER BY [取引日] DESC LIMIT ${PAGE_SIZE} OFFSET ${loadedCount}`;
         const stmt = db.prepare(dataSql);
         stmt.bind(params);
