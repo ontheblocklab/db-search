@@ -53,7 +53,7 @@
   <!-- 初回DB読み込みエリア -->
   <div id="setup-area" class="card file-input-area">
     <p><b>初回の初期設定</b></p>
-    <p style="font-size: 0.85rem; color: #555;">作成した MPD.db ファイルを選択してください。<br>（アプリ内に読み込まれます）</p>
+    <p style="font-size: 0.85rem; color: #555;">作成した DB ファイル（.db）を選択してください。<br>（アプリ内に読み込まれます）</p>
     <input type="file" id="db-file" accept=".db,.sqlite">
     <div id="setup-msg"></div>
   </div>
@@ -119,7 +119,7 @@
       }
 
       const setupMsg = document.getElementById('setup-msg');
-      setupMsg.innerHTML = '<p style="color:#007aff; font-weight:bold; margin-top:15px;">データベース（461MB）をメモリに読み込み中...<br><span style="font-size:0.8rem; font-weight:normal; color:#555;">※15秒〜30秒ほどかかります。そのままお待ちください。</span></p>';
+      setupMsg.innerHTML = '<p style="color:#007aff; font-weight:bold; margin-top:15px;">データベースをメモリに読み込み中...<br><span style="font-size:0.8rem; font-weight:normal; color:#555;">※15秒〜30秒ほどかかります。そのままお待ちください。</span></p>';
       
       setTimeout(() => {
         const reader = new FileReader();
@@ -131,7 +131,7 @@
             // 読み込み成功時の画面切り替え
             document.getElementById('setup-area').style.display = 'none';
             document.getElementById('search-area').style.display = 'block';
-            document.getElementById('status').innerText = 'データベース準備完了（100万件読み込み済み）';
+            document.getElementById('status').innerText = 'データベース準備完了';
 
           } catch (err) {
             console.error("DB展開エラー:", err);
@@ -201,7 +201,7 @@
         const params = currentKeywords.map(k => '%' + k + '%');
 
         if (isNewSearch) {
-          const countSql = `SELECT COUNT(*) as total FROM mpd WHERE ${whereClauses}`;
+          const countSql = `SELECT COUNT(*) as total FROM dbo_View_Products_Admin_Offline WHERE ${whereClauses}`;
           const countStmt = db.prepare(countSql);
           countStmt.bind(params);
           if (countStmt.step()) {
@@ -217,8 +217,8 @@
           return;
         }
 
-        // 取引日の降順（ORDER BY [取引日] DESC）で最新データから順に取得
-        const dataSql = `SELECT * FROM mpd WHERE ${whereClauses} ORDER BY [取引日] DESC LIMIT ${PAGE_SIZE} OFFSET ${loadedCount}`;
+        // 取引日の降順で最新データから順に取得（テーブル名: dbo_View_Products_Admin_Offline）
+        const dataSql = `SELECT * FROM dbo_View_Products_Admin_Offline WHERE ${whereClauses} ORDER BY [取引日] DESC LIMIT ${PAGE_SIZE} OFFSET ${loadedCount}`;
         const stmt = db.prepare(dataSql);
         stmt.bind(params);
 
@@ -259,33 +259,33 @@
       return str === '' ? '-' : str;
     }
 
+    // 落札金額の3桁カンマ区切りフォーマット（例: 1000000 -> 1,000,000）
+    function formatPrice(val) {
+      if (val === null || val === undefined) return '-';
+      const str = String(val).trim();
+      if (str === '' || str === '-') return '-';
+      return str.replace(/\d+/g, (match) => Number(match).toLocaleString('ja-JP'));
+    }
+
     // 1件分のHTMLカード生成
     function renderItemCard(row) {
+      // 1段目: ブランド + モデル名 + ランク
       const brand = formatValue(row['ブランド']);
       const model = formatValue(row['モデル名']);
       const rankVal = formatValue(row['ランク']);
       const rank = rankVal !== '-' ? `[ランク: ${rankVal}]` : '[ランク: -]';
 
-      // 2段目: 付属品を赤字化
-      const fukuzokuhinVal = formatValue(row['付属品']);
-      const fukuzokuhinHtml = fukuzokuhinVal !== '-' 
-        ? `付属品: <span style="color: #d9534f; font-weight: bold;">${fukuzokuhinVal}</span>` 
-        : `付属品: -`;
-
+      // 2段目: 型番 + シリアル + 素材 + 文字盤カラー + 詳細 + 重量（付属品は3段目へ移動）
       const line2Items = [
         `型番: ${formatValue(row['型番'])}`,
         `シリアル: ${formatValue(row['シリアル'])}`,
         `素材: ${formatValue(row['素材'])}`,
         `文字盤: ${formatValue(row['文字盤カラー'])}`,
         `詳細: ${formatValue(row['詳細'])}`,
-        `重量: ${formatValue(row['重量'])}`,
-        fukuzokuhinHtml
+        `重量: ${formatValue(row['重量'])}`
       ].join(' | ');
 
-      // 3段目
-      const date = (row['取引日'] || '').split(' ')[0] || '-';
-      const price = formatValue(row['落札金額']);
-      
+      // 3段目・1行目: 掛け率 + 取引場所 + 成約不成約
       let kakeritsuText = '-';
       if (row['掛け率'] !== null && row['掛け率'] !== undefined && row['掛け率'] !== '') {
         const val = parseFloat(row['掛け率']);
@@ -298,13 +298,22 @@
       const kakeritsu = `掛け率: ${kakeritsuText}`;
       const place = `取引場所: ${formatValue(row['取引場所'])}`;
 
-      // 成約不成約: 項目名は付けず値のみ（赤字）
       const seiyakuVal = formatValue(row['成約不成約']);
       const seiyakuHtml = seiyakuVal !== '-' 
         ? `<span style="color: #d9534f; font-weight: bold;">${seiyakuVal}</span>` 
         : `-`;
 
-      const line3SubItems = [kakeritsu, place, seiyakuHtml].join(' | ');
+      const line3SubItems1 = [kakeritsu, place, seiyakuHtml].join(' | ');
+
+      // 3段目・2行目: 付属品（赤字・太字）
+      const fukuzokuhinVal = formatValue(row['付属品']);
+      const fukuzokuhinHtml = fukuzokuhinVal !== '-' 
+        ? `付属品: <span style="color: #d9534f; font-weight: bold;">${fukuzokuhinVal}</span>` 
+        : `付属品: -`;
+
+      // 3段目・3行目: 取引日 + 落札金額（3桁カンマ表記）
+      const date = (row['取引日'] || '').split(' ')[0] || '-';
+      const price = formatPrice(row['落札金額']);
 
       return `
         <li style="margin-bottom: 12px; border-left: 4px solid #007aff; background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
@@ -319,13 +328,21 @@
           </div>
 
           <!-- 3段目 -->
-          <div style="font-size: 0.85rem; color: #6e6e73; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; border-top: 1px solid #f0f0f2; padding-top: 6px;">
-            <div>
-              <span>取引日: ${date}</span>
-              <span style="margin-left: 8px; font-weight: bold; color: #d9534f; font-size: 0.95rem;">落札額: ${price}</span>
+          <div style="font-size: 0.85rem; color: #6e6e73; border-top: 1px solid #f0f0f2; padding-top: 6px; line-height: 1.5;">
+            <!-- 3段目・1行目: 掛け率 | 取引場所 | 成約不成約 -->
+            <div style="font-size: 0.8rem; color: #86868b; margin-bottom: 3px;">
+              ${line3SubItems1}
             </div>
-            <div style="font-size: 0.8rem; color: #86868b;">
-              ${line3SubItems}
+
+            <!-- 3段目・2行目: 付属品 -->
+            <div style="font-size: 0.82rem; color: #424245; margin-bottom: 4px;">
+              ${fukuzokuhinHtml}
+            </div>
+
+            <!-- 3段目・3行目: 取引日 & 落札金額 -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+              <span>取引日: ${date}</span>
+              <span style="font-weight: bold; color: #d9534f; font-size: 0.95rem;">落札額: ${price}</span>
             </div>
           </div>
         </li>
