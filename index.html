@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- 検索エンジン（Google・Yahoo等）に登録させない設定 -->
+  <meta name="robots" content="noindex,nofollow">
   <link rel="manifest" href="manifest.json">
   <title>DB検索アプリ</title>
 
@@ -275,7 +277,7 @@
       const rankVal = formatValue(row['ランク']);
       const rank = rankVal !== '-' ? `[ランク: ${rankVal}]` : '[ランク: -]';
 
-      // 2段目: 型番 + シリアル + 素材 + 文字盤カラー + 詳細 + 重量（付属品は3段目へ移動）
+      // 2段目: 型番 + シリアル + 素材 + 文字盤カラー + 詳細 + 重量
       const line2Items = [
         `型番: ${formatValue(row['型番'])}`,
         `シリアル: ${formatValue(row['シリアル'])}`,
